@@ -1,0 +1,585 @@
+#+TITLE: \mu Kanren
+#+SUBTITLE: A Minimal Functional Core for Relational Programming
+#+AUTHOR: Jason Hemann, Dan Friedman
+#+LATEX_COMPILER: pdflatex
+#+DATE: \today
+#+startup: beamer
+#+LATEX_CLASS: beamer
+#+LATEX_CLASS_OPTIONS: [bigger]
+#+OPTIONS: H:2 toc:nil
+
+# ** Src
+# #+LATEX: {\tiny
+
+# #+BEGIN_SRC scheme
+# (define (walk u s)
+#   (let ((pr (and (var? u) (assp (lambda (v) (var=? u v)) s))))
+#     (if pr (walk (cdr pr) s) u)))
+
+# (define (ext-s x v s) `((,x . ,v) . ,s))
+
+# (define (== u v)
+#   (lambda (s/c)
+#     (let ((s (unify u v (car s/c))))
+#       (if s (unit `(,s . ,(cdr s/c))) mzero))))
+
+# (define (unit s/c) (cons s/c mzero))
+# (define mzero '())
+
+# (define (unify u v s)
+#   (let ((u (walk u s)) (v (walk v s)))
+#     (cond
+#       ((and (var? u) (var? v) (var=? u v)) s)
+#       ((var? u) (ext-s u v s))
+#       ((var? v) (ext-s v u s))
+#       ((and (pair? u) (pair? v))
+#        (let ((s (unify (car u) (car v) s)))
+#          (and s (unify (cdr u) (cdr v) s))))
+#       (else (and (eqv? u v) s)))))
+
+# (define (call/fresh f)
+#   (lambda (s/c)
+#     (let ((c (cdr s/c)))
+#       ((f (var c)) `(,(car s/c) . ,(+ c 1))))))
+
+# (define (disj g1 g2) (lambda (s/c) (mplus (g1 s/c) (g2 s/c))))
+# (define (conj g1 g2) (lambda (s/c) (bind (g1 s/c) g2)))
+
+# (define (mplus s1 s2)
+#   (cond
+#     ((null? s1) s2)
+#     ((procedure? s1) (lambda () (mplus s2 (s1))))
+#     (else (cons (car s1) (mplus (cdr s1) s2)))))
+
+# (define (bind s g)
+#   (cond
+#     ((null? s) mzero)
+#     ((procedure? s) (lambda () (bind (s) g)))
+#     (else (mplus (g (car s)) (bind (cdr s) g)))))
+# #+END_SRC
+
+# #+LATEX: }
+
+** (lambda () 'taylskid)
+
+- Taylor Skidmore
+- Droit
+- @SirSkidmore
+- github.com/taylskid/mkanren-talk
+
+* Before we begin...
+
+** Example
+
+#+BEGIN_SRC scheme
+(call/fresh
+  (lambda (q)
+    (== q 'olive)))
+#+END_SRC 
+
+** Example
+
+#+BEGIN_SRC scheme
+(call/fresh
+  (lambda (q)
+    (== q 'olive)))
+#+END_SRC 
+
+\Rightarrow ~olive~, or, ~'((((#(0) . olive)) . 1))~
+
+** Example Cont
+
+#+BEGIN_SRC scheme
+(conj
+ (call/fresh (lambda (a) (== a 'oil)))
+ (call/fresh (lambda (b)
+               (disj (== b 'olive)
+                     (== b 'canola))))) 
+#+END_SRC
+
+** Example Cont
+
+#+BEGIN_SRC scheme
+(conj
+ (call/fresh (lambda (a) (== a 'oil)))
+ (call/fresh (lambda (b)
+               (disj (== b 'olive)
+                     (== b 'canola))))) 
+#+END_SRC
+
+\Rightarrow ~'(oil oil)~, or, 
+
+#+BEGIN_SRC scheme
+'((((#(1) . olive) (#(0) . oil)) . 2)
+  (((#(1) . canola) (#(0) . oil)) . 2))
+#+END_SRC
+
+** Bonus Example
+
+#+BEGIN_SRC scheme
+(call/fresh
+ (lambda (q)
+   (call/fresh
+    (lambda (x)
+      (call/fresh
+       (lambda (y)
+         (conj (== `(,x ,y) q)
+               (disj (conj (== x 'split)
+                           (== y 'pea))
+                     (conj (== x 'red)
+                           (== y 'bean))))))))))
+#+END_SRC
+
+** Bonus Example Cont
+
+~'((split pea) (red bean))~
+
+#+BEGIN_SRC scheme
+'((((#(2) . pea) (#(1) . split)
+   (#(0) #(1) #(2))) . 3)
+  (((#(2) . bean) (#(1) . red)
+   (#(0) #(1) #(2))) . 3))
+#+END_SRC
+
+* Requisite Jargon
+
+** Goals
+
+Logic programming equivalent of a predicate.
+
+Goals succeed or fail (~#s~ or ~#u~), and could cause the state of the program
+to grow (i.e. variable 'bindings')
+
+- ~(== 5 5)~ \Rightarrow ~#s~
+- ~(== 5 4)~ \Rightarrow ~#u~
+- ~(== q 5)~ \Rightarrow ~#s~ (state grows)
+- ~(== 5 q)~ \Rightarrow ~#s~ (state grows)
+
+** Ext. Goal Example
+
+#+BEGIN_SRC scheme
+(call/fresh
+  (lambda (q)
+    (conj (== q 'oil)
+          (== q 'butter))))
+#+END_SRC
+
+\Rightarrow
+
+~#u~
+
+** Streams
+
+Scheme implementation of the List Monad. 
+
+Output of a \mu Kanren program is a stream of states from 'successful' goals
+
+- ~'((((#(0) . olive)) . 1))~
+- ~'((((#(1) . olive) (#(0) . oil)) . 2) (((#(1) . canola) (#(0) . oil)) . 2))~
+
+* Implementation
+
+If I don't write something here Beamer formatting breaks
+
+- Variables
+- Streams
+- Streams utils
+- Goal constructors
+
+** Variables
+
+Varaibles are vectors that track their De Bruijn index.
+
+#+BEGIN_SRC scheme
+(define (var c) (vector c))
+(define (var? x) (vector? x))
+(define (var=? x1 x2) (= (vector-ref x1 0)
+                         (vector-ref x2 0)))
+#+END_SRC
+
+** Variables and State
+
+#+BEGIN_SRC scheme
+(define (walk u s)
+  (let ((pr (and (var? u)
+                 (assp (lambda (v) (var=? u v)) s))))
+    (if pr (walk (cdr pr) s) u)))
+
+(define (ext-s x v s) `((,x . ,v) . ,s))
+
+(define empty-state '(() . 0))
+#+END_SRC
+
+** State Examples
+
+- ~(ext-s (var 0) 5 '())~
+
+  \Rightarrow ~'((#(0) . 5))~
+- ~(walk (var 0) (ext-s (var 0) 5 '()))~ \Rightarrow ~5~
+- ~(ext-s (var 1) 5 (ext-s (var 0) (var 1) '()))~
+  
+  \Rightarrow ~'((#(1) . 5) (#(0) . #(1)))~
+- ~(walk (var 0) foo)~ \Rightarrow ~5~
+
+**  Goal \equiv
+
+#+BEGIN_SRC scheme
+(define (== u v)
+  (lambda (s/c)
+    (let ((s (unify u v (car s/c))))
+      (if s (unit `(,s . ,(cdr s/c))) mzero))))
+
+(define (unit s/c) (cons s/c mzero))
+(define mzero '())
+#+END_SRC
+
+** unify
+
+#+BEGIN_SRC scheme
+(define (unify u v s)
+  (let ((u (walk u s)) (v (walk v s)))
+    (cond
+      ((and (var? u) (var? v) (var=? u v)) s)
+      ((var? u) (ext-s u v s))
+      ((var? v) (ext-s v u s))
+      ((and (pair? u) (pair? v))
+       (let ((s (unify (car u) (car v) s)))
+         (and s (unify (cdr u) (cdr v) s))))
+      (else (and (eqv? u v) s)))))
+#+END_SRC
+
+** unify / \equiv example
+
+#+BEGIN_SRC scheme
+((call/fresh (lambda (q) (== q 'oil))) empty-state)
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+(unify (var 0) 'oil '())
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+'(((#(0) . 'oil)) . 1)
+#+END_SRC
+
+** call/fresh
+
+#+BEGIN_SRC scheme
+(define (call/fresh f)
+  (lambda (s/c)
+    (let ((c (cdr s/c)))
+      ((f (var c)) `(,(car s/c) . ,(+ c 1))))))
+#+END_SRC
+
+** call/fresh example
+
+#+BEGIN_SRC scheme
+((call/fresh (lambda (q) (== q 'oil)))
+ empty-state)
+#+END_SRC
+
+state: ~'(() . 0)~ \Rightarrow ~'(() . 1)~
+
+#+BEGIN_SRC scheme
+((== (var 0) 'oil) '(() . 1))
+#+END_SRC
+
+** disj / conj
+
+#+BEGIN_SRC scheme
+(define (disj g1 g2)
+  (lambda (s/c) (mplus (g1 s/c) (g2 s/c))))
+(define (conj g1 g2)
+  (lambda (s/c) (bind (g1 s/c) g2)))
+#+END_SRC
+
+** mplus
+
+#+BEGIN_SRC scheme
+(define (mplus s1 s2)
+  (cond
+    ((null? s1) s2)
+    (else (cons (car s1) (mplus (cdr s1) s2)))))
+#+END_SRC
+
+** bind
+
+#+BEGIN_SRC scheme
+(define (bind s g)
+  (cond
+    ((null? s) mzero)
+    (else (mplus (g (car s)) (bind (cdr s) g)))))
+#+END_SRC
+
+** Conclusions
+
+#+BEGIN_SRC scheme
+(conj
+ (call/fresh (lambda (a) (== a 'oil)))
+ (call/fresh (lambda (b)
+               (disj (== b 'olive)
+                     (== b 'canola))))) 
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+'((((#(1) . olive) (#(0) . oil)) . 2)
+  (((#(1) . canola) (#(0) . oil)) . 2))
+#+END_SRC
+
+* Extensions
+
+** Write some macros
+
+#+BEGIN_SRC scheme
+(define-syntax Zzz
+  (syntax-rules ()
+    ((_ g) (lambda (s/c) (lambda () (g s/c))))))
+
+(define-syntax conj+
+  (syntax-rules ()
+    ((_ g) (Zzz g))
+    ((_ g0 g ...) (conj (Zzz g0) (conj+ g ...)))))
+
+(define-syntax disj+
+  (syntax-rules ()
+    ((_ g) (Zzz g))
+    ((_ g0 g ...) (disj (Zzz g0) (disj+ g ...)))))
+#+END_SRC
+
+** Making \mu Kanren usable
+
+#+BEGIN_SRC scheme
+(run* (q)
+  (fresh (x y)
+    (== `(,x ,y) q)
+    (conde
+      ((== x 'split) (== y 'pea))
+      ((== x 'red) (== y 'bean)))))
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+'((split pea) (red bean)
+#+END_SRC
+
+** Write some macros
+
+#+BEGIN_SRC scheme
+(define-syntax conde
+  (syntax-rules ()
+    ((_ (g0 g ...) ...)
+     (disj+ (conj+ g0 g ...) ...))))
+
+(define-syntax fresh
+  (syntax-rules ()
+    ((_ () g0 g ...) (conj+ g0 g ...))
+    ((_ (x0 x ...) g0 g ...)
+     (call/fresh
+       (lambda (x0) (fresh (x ...) g0 g ...))))))
+#+END_SRC
+
+** Macro Expansion
+
+#+BEGIN_SRC scheme
+(fresh (x y)
+  ... )
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+(call/fresh (lambda (x) (fresh (y) ...)))
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+(call/fresh (lambda (x)
+  (call/fresh (lambda (y) ...))))
+#+END_SRC
+
+** Halfway...
+
+#+BEGIN_SRC scheme
+((call/fresh
+   (lambda (q)
+     (fresh (x y)
+       (== `(,x ,y) q)
+       (conde
+         ((== x 'split) (== y 'pea))
+         ((== x 'red) (== y 'bean))))))
+ empty-state)
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+'((((#(2) . pea) (#(1) . split)
+   (#(0) #(1) #(2))) . 3)
+  (((#(2) . bean) (#(1) . red)
+   (#(0) #(1) #(2))) . 3))
+#+END_SRC
+
+** Write some functions
+
+#+BEGIN_SRC scheme
+(define (mK-reify s/c*) (map reify-state/1st-var s/c*))
+(define (reify-state/1st-var s/c)
+  (let ((v (walk* (var 0) (car s/c))))
+    (walk* v (reify-s v '()))))
+
+(define (reify-s v s)
+  (let ((v (walk v s)))
+    (cond
+      ((var? v)
+       (let ((n (reify-name (length s))))
+         (cons `(,v . ,n) s)))
+      ((pair? v)
+       (reify-s (cdr v) (reify-s (car v) s)))
+      (else s))))
+#+END_SRC
+
+** Functions...
+
+#+BEGIN_SRC scheme
+(define (reify-name n)
+  (string->symbol
+   (string-append "_" "." (number->string n))))
+
+(define (walk* v s)
+  (let ((v (walk v s)))
+    (cond
+      ((var? v) v)
+      ((pair? v) (cons (walk* (car v) s)
+                       (walk* (cdr v) s)))
+      (else v))))
+
+(define (call/empty-state g) (g empty-state))
+#+END_SRC
+
+** Write some macros
+
+#+BEGIN_SRC scheme
+(define-syntax run
+  (syntax-rules ()
+    ((_ n (x ...) g0 g ...)
+     (mK-reify
+      (take n (call/empty-state
+               (fresh (x ...) g0 g ...)))))))
+
+(define-syntax run*
+  (syntax-rules ()
+    ((_ (x ...) g0 g ...)
+     (mK-reify
+      (take-all (call/empty-state
+                 (fresh (x ...) g0 g ...)))))))
+#+END_SRC
+
+** And, finally...
+
+#+BEGIN_SRC scheme
+(run* (q)
+  (fresh (x y)
+    (== `(,x ,y) q)
+    (conde
+      ((== x 'split) (== y 'pea))
+      ((== x 'red) (== y 'bean)))))
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+'((split pea) (red bean)
+#+END_SRC
+
+* Conclusions
+
+** Why?
+
+Why is this cool? Why should we care?
+
+- @@latex:{\only<2>{\color{red}}interpreters/type checkers}@@
+- @@latex:{\only<2>{\color{red}}Quine generation}@@
+- Register Allocation ("Four color problem")
+- "Real applications"
+  - @@latex:{\only<2>{\color{red}}Barliman}@@
+  - MediKanren
+
+** Relational Interpreters
+
+#+BEGIN_SRC scheme
+(run 1 (q) (evalo 5 q)
+(run 1 (q) (evalo '((lambda (x) 5) 10) q))
+#+END_SRC
+
+\Rightarrow
+
+~5~
+
+** Relational Interpreters
+
+#+BEGIN_SRC scheme
+(run 2 (q) (evalo q 5))
+#+END_SRC
+
+\Rightarrow
+
+#+BEGIN_SRC scheme
+'(5 ((lambda (_.0) 5) _.1))
+#+END_SRC
+
+** Type Checkers
+
+- ~(run 1 (q) (typeo 5 q)~ \Rightarrow ~Int~
+- ~(run 1 (q) (typeo '(lambda (x) 5) q)~
+
+  \Rightarrow ~'(Any -> Int)~
+- ~(run 1 (q) (typeo q Int)~ \Rightarrow ~'5~
+- ~(run 1 (q) (typeo q '(Any -> Int))~
+
+  \Rightarrow ~(lambda (x) 5)~
+
+** Barliman: Program Synthesis
+
+#+CAPTION: Barliman
+[[./barliman.jpg]]
+
+https://github.com/webyrd/Barliman
+
+** Barliman: Under the hood
+
+#+BEGIN_SRC scheme
+(run 1 (defn)
+  (fresh (body)
+    (absento 1 defn) (absento 2 defn) ...
+    (== defn `(append (lambda (xs ys) ,body)))
+    (evalo
+      `(letrec (,defn)
+         (list (append '() '()))
+               (append '(1) '(2))
+               (append '(1 2) '(3 4)))
+      '(() (1) (1 2) (1 2 3 4)))))
+#+END_SRC
+
+** MediKanren
+
+[[./medikanren.jpg]]
+
+http://www.uab.edu/mix/stories/a-high-speed-dr-house-for-medical-breakthroughs
+
+** MediKanren
+
+Relations over SemMedDB
+
+- diseases and symptoms
+- drugs and symptoms
+- drugs and diseases
+
+https://github.com/webyrd/mediKanren
